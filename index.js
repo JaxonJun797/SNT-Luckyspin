@@ -86,6 +86,29 @@ function parseDevice(userAgent = '') {
   return 'Unknown';
 }
 
+function buildDateRange(from, to) {
+  const range = {};
+  if (from) {
+    const start = new Date(`${from}T00:00:00.000+06:30`);
+    if (Number.isNaN(start.getTime())) throw new Error('Invalid start date');
+    range.$gte = start;
+  }
+  if (to) {
+    const end = new Date(`${to}T23:59:59.999+06:30`);
+    if (Number.isNaN(end.getTime())) throw new Error('Invalid end date');
+    range.$lte = end;
+  }
+  return range;
+}
+
+function prizeAmount(prize = '') {
+  const myanmarDigits = { '၀': '0', '၁': '1', '၂': '2', '၃': '3', '၄': '4', '၅': '5', '၆': '6', '၇': '7', '၈': '8', '၉': '9' };
+  const normalized = String(prize).replace(/[၀-၉]/g, digit => myanmarDigits[digit]).replace(/,/g, '');
+  if (!/(MMK|ကျပ်)/i.test(normalized)) return 0;
+  const match = normalized.match(/\d+(?:\.\d+)?/);
+  return match ? Number(match[0]) : 0;
+}
+
 async function readConfig() {
   const configs = await Config.find({ key: { $in: ['prizes', 'probabilities', 'displayMode', 'baseCounter'] } }).lean();
   const values = Object.fromEntries(configs.map(item => [item.key, item.value]));
@@ -178,12 +201,45 @@ app.use('/api/admin', requireAdmin);
 
 app.get('/api/admin/stats', async (req, res, next) => {
   try {
-    const start = new Date();
-    start.setHours(0, 0, 0, 0);
-    const [totalSpins, todaySpins, latestSpins] = await Promise.all([
-      Spin.countDocuments(), Spin.countDocuments({ date: { $gte: start } }), Spin.find().sort({ date: -1 }).limit(200).lean()
+    const myanmarToday = new Date(Date.now() + 390 * 60 * 1000).toISOString().slice(0, 10);
+    const start = buildDateRange(myanmarToday).$gte;
+    const name = normalizeUsername(req.query.name);
+    const dateRange = buildDateRange(req.query.from, req.query.to);
+    const query = {};
+    if (name) query.username = { $regex: name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), $options: 'i' };
+    if (Object.keys(dateRange).length) query.date = dateRange;
+    const limit = Math.min(Math.max(Number(req.query.limit) || 200, 1), 500);
+
+    const [totalSpins, todaySpins, filteredSpins, allFilteredSpins] = await Promise.all([
+      Spin.countDocuments(),
+      Spin.countDocuments({ date: { $gte: start } }),
+      Spin.find(query).sort({ date: -1 }).limit(limit).lean(),
+      Spin.find(query).select('date prize').sort({ date: 1 }).lean()
     ]);
-    res.json({ success: true, stats: { totalSpins, totalUsers: totalSpins, todaySpins }, spins: latestSpins });
+    const dailyMap = new Map();
+    let filteredAmount = 0;
+    for (const spin of allFilteredSpins) {
+      const myanmarTime = new Date(new Date(spin.date).getTime() + 390 * 60 * 1000);
+      const day = myanmarTime.toISOString().slice(0, 10);
+      const amount = prizeAmount(spin.prize);
+      filteredAmount += amount;
+      const current = dailyMap.get(day) || { date: day, plays: 0, amount: 0 };
+      current.plays += 1;
+      current.amount += amount;
+      dailyMap.set(day, current);
+    }
+    res.json({
+      success: true,
+      stats: {
+        totalSpins,
+        totalUsers: totalSpins,
+        todaySpins,
+        filteredSpins: allFilteredSpins.length,
+        filteredAmount
+      },
+      daily: [...dailyMap.values()],
+      spins: filteredSpins
+    });
   } catch (error) { next(error); }
 });
 
@@ -250,4 +306,4 @@ if (require.main === module) {
   });
 }
 
-module.exports = { app, normalizeUsername, validUsername, secureWeightedIndex, validatePrizeConfig };
+module.exports = { app, normalizeUsername, validUsername, secureWeightedIndex, validatePrizeConfig, buildDateRange, prizeAmount };
