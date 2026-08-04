@@ -13,8 +13,14 @@ const DEFAULT_PRIZES = {
 };
 const DEFAULT_WEIGHTS = [30, 20, 40, 30, 1, 0.1, 0.01, 0.001, 0.0001];
 
-const allowedOrigins = (process.env.CORS_ORIGINS || '')
-  .split(',').map(value => value.trim()).filter(Boolean);
+const productionOrigins = [
+  'https://luckyspin-snt.netlify.app',
+  'https://jaxonjun797.github.io'
+];
+const allowedOrigins = [...new Set([
+  ...productionOrigins,
+  ...(process.env.CORS_ORIGINS || '').split(',').map(value => value.trim()).filter(Boolean)
+])];
 
 app.disable('x-powered-by');
 app.set('trust proxy', 1);
